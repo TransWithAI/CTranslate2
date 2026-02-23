@@ -1,0 +1,63 @@
+name: Publish Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to create a GitHub Release for (e.g. v4.7.2). Leave empty to build without releasing."
+        required: false
+        default: ""
+
+jobs:
+  build-python-wheels-rocm:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.2.1
+        with:
+          package-dir: python
+          output-dir: python/wheelhouse
+        env:
+          CIBW_BUILD: "cp310-*"
+          CIBW_ENVIRONMENT_LINUX: ROCM_PATH=/opt/rocm LD_LIBRARY_PATH=/opt/rocm/lib/llvm/lib:$LD_LIBRARY_PATH
+          CIBW_ENVIRONMENT_WINDOWS: CTRANSLATE2_ROOT='${{ github.workspace }}\install'
+          CIBW_BEFORE_ALL_LINUX: python/tools/prepare_build_environment_linux_rocm.sh
+          CIBW_BEFORE_ALL_WINDOWS: bash python/tools/prepare_build_environment_windows_rocm.sh
+          CIBW_BEFORE_BUILD: pip install -r python/install_requirements.txt
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_ARCHS: auto64
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: 'auditwheel repair -w {dest_dir} --exclude "/opt/rocm/lib/lib*" {wheel}'
+
+      - name: Upload Python wheels
+        uses: actions/upload-artifact@v6
+        with:
+          name: rocm-python-wheels-${{ runner.os }}
+          path: python/wheelhouse
+
+  create-release:
+    if: inputs.tag != ''
+    needs: [build-python-wheels-rocm]
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Download ROCm wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rocm-python-wheels-*
+          merge-multiple: true
+          path: release-wheelhouse
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: release-wheelhouse/*.whl
